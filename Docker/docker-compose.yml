@@ -1,0 +1,398 @@
+# Docker Compose - TP GitOps Complete
+# Version: 3.9
+# Author: DevOps Master Course
+# Description: Complete GitOps stack with monitoring, CI/CD, and security
+
+version: '3.9'
+
+networks:
+  gitops-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  jenkins_data:
+    driver: local
+  postgres_data:
+    driver: local
+  sonarqube_data:
+    driver: local
+  gitlab_config:
+    driver: local
+  gitlab_logs:
+    driver: local
+  gitlab_data:
+    driver: local
+
+services:
+  # ============================================
+  # MONITORING STACK
+  # ============================================
+  
+  prometheus:
+    image: cgr.dev/chainguard/prometheus:latest
+    container_name: gitops-prometheus
+    hostname: prometheus
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.10
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus_data:/prometheus
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus/rules:/etc/prometheus/rules:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    labels:
+      - "monitoring.service=prometheus"
+      - "monitoring.type=metrics"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: gitops-grafana
+    hostname: grafana
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.11
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=gitops2024
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-clock-panel,grafana-simple-json-datasource
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_SECURITY_DISABLE_GRAVATAR=true
+    depends_on:
+      - prometheus
+    labels:
+      - "monitoring.service=grafana"
+      - "monitoring.type=visualization"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: gitops-node-exporter
+    hostname: node-exporter
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.12
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    labels:
+      - "monitoring.service=node-exporter"
+      - "monitoring.type=exporter"
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.0
+    container_name: gitops-cadvisor
+    hostname: cadvisor
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.13
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    devices:
+      - /dev/kmsg
+    labels:
+      - "monitoring.service=cadvisor"
+      - "monitoring.type=container-metrics"
+
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: gitops-alertmanager
+    hostname: alertmanager
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.14
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./config/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    labels:
+      - "monitoring.service=alertmanager"
+      - "monitoring.type=alerting"
+
+  # ============================================
+  # CI/CD STACK
+  # ============================================
+
+  jenkins:
+    image: jenkins/jenkins:2.426.1-lts
+    container_name: gitops-jenkins
+    hostname: jenkins
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.20
+    ports:
+      - "8081:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_data:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config/jenkins/jobs:/var/jenkins_home/jobs:ro
+      - ./config/jenkins/init.groovy.d:/usr/share/jenkins/ref/init.groovy.d:ro
+    environment:
+      - JENKINS_OPTS=--prefix=/
+      - JAVA_OPTS=-Duser.timezone=Europe/Paris -Djenkins.install.runSetupWizard=false
+      - JENKINS_ADMIN_ID=admin
+      - JENKINS_ADMIN_PASSWORD=jenkins2024
+    user: root
+    labels:
+      - "cicd.service=jenkins"
+      - "cicd.type=automation"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/login || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  gitlab:
+    image: gitlab/gitlab-ce:16.6.0-ce.0
+    container_name: gitops-gitlab
+    hostname: gitlab
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.21
+    ports:
+      - "8082:80"
+      - "8443:443"
+      - "2222:22"
+    volumes:
+      - gitlab_config:/etc/gitlab
+      - gitlab_logs:/var/log/gitlab
+      - gitlab_data:/var/opt/gitlab
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://localhost:8082'
+        gitlab_rails['gitlab_shell_ssh_port'] = 2222
+        gitlab_rails['initial_root_password'] = 'gitlab2024root'
+        gitlab_rails['gitlab_default_theme'] = 2
+        prometheus['enable'] = true
+        prometheus['listen_address'] = '0.0.0.0:9090'
+        prometheus_monitoring['enable'] = false
+    labels:
+      - "cicd.service=gitlab"
+      - "cicd.type=scm"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:80/-/health || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # ============================================
+  # SECURITY & QUALITY STACK
+  # ============================================
+
+  sonarqube:
+    image: sonarqube:10.3.0-community
+    container_name: gitops-sonarqube
+    hostname: sonarqube
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.30
+    ports:
+      - "9000:9000"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - ./config/sonarqube/extensions:/opt/sonarqube/extensions
+    environment:
+      - SONAR_JDBC_URL=jdbc:postgresql://postgres:5432/sonarqube
+      - SONAR_JDBC_USERNAME=sonar
+      - SONAR_JDBC_PASSWORD=sonar2024
+    depends_on:
+      - postgres
+    labels:
+      - "security.service=sonarqube"
+      - "security.type=code-analysis"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/api/system/status | grep -q UP || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: gitops-postgres
+    hostname: postgres
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.31
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./config/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres2024
+      - POSTGRES_DB=gitops
+    labels:
+      - "storage.service=postgres"
+      - "storage.type=database"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  trivy:
+    image: aquasec/trivy:0.48.0
+    container_name: gitops-trivy
+    hostname: trivy
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.32
+    ports:
+      - "8084:8080"
+    command: server --listen 0.0.0.0:8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./trivy-cache:/root/.cache/trivy
+    environment:
+      - TRIVY_NO_PROGRESS=true
+      - TRIVY_SEVERITY=HIGH,CRITICAL
+    labels:
+      - "security.service=trivy"
+      - "security.type=vulnerability-scanner"
+
+  # ============================================
+  # TOOLS & UTILITIES
+  # ============================================
+
+  portainer:
+    image: portainer/portainer-ce:2.19.3
+    container_name: gitops-portainer
+    hostname: portainer
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.40
+    ports:
+      - "9001:9000"
+      - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    labels:
+      - "tools.service=portainer"
+      - "tools.type=container-management"
+
+  redis:
+    image: redis:7-alpine
+    container_name: gitops-redis
+    hostname: redis
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.41
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./config/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    labels:
+      - "storage.service=redis"
+      - "storage.type=cache"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # APPLICATION EXAMPLE
+  # ============================================
+
+  app:
+    build:
+      context: ./application
+      dockerfile: Dockerfile
+    container_name: gitops-app
+    hostname: app
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.50
+    ports:
+      - "3001:3000"
+    environment:
+      - NODE_ENV=production
+      - PROMETHEUS_ENABLED=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+      - postgres
+    labels:
+      - "app.service=monitoring-app"
+      - "app.version=1.0.0"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  portainer_data:
+    driver: local

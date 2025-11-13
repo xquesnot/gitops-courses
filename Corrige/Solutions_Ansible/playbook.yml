@@ -1,0 +1,30 @@
+---
+- name: Configure GitOps Infrastructure
+  hosts: localhost
+  become: yes
+  
+  tasks:
+    - name: Ensure Docker is installed
+      package:
+        name: docker
+        state: present
+    
+    - name: Start Docker service
+      service:
+        name: docker
+        state: started
+        enabled: yes
+    
+    - name: Deploy monitoring stack
+      docker_compose:
+        project_src: /opt/gitops
+        state: present
+    
+    - name: Wait for services to be healthy
+      uri:
+        url: "http://localhost:{{ item.port }}/{{ item.path }}"
+      with_items:
+        - { port: 9090, path: "-/healthy" }
+        - { port: 3000, path: "api/health" }
+      retries: 10
+      delay: 10

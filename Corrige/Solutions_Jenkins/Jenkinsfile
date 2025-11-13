@@ -1,0 +1,61 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_REGISTRY = 'localhost:5000'
+        APP_NAME = 'gitops-app'
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        
+        stage('Security Scan - IaC') {
+            parallel {
+                stage('Checkov') {
+                    steps {
+                        sh 'checkov -d . --quiet || true'
+                    }
+                }
+                stage('Trivy') {
+                    steps {
+                        sh 'trivy fs . --severity HIGH,CRITICAL'
+                    }
+                }
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                sh 'docker build -t ${APP_NAME}:${BUILD_NUMBER} .'
+            }
+        }
+        
+        stage('Test') {
+            steps {
+                sh 'docker run --rm ${APP_NAME}:${BUILD_NUMBER} npm test'
+            }
+        }
+        
+        stage('Deploy') {
+            steps {
+                sh 'docker-compose up -d'
+            }
+        }
+    }
+    
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            echo 'Pipeline succeeded!'
+        }
+        failure {
+            echo 'Pipeline failed!'
+        }
+    }
+}
