@@ -2,7 +2,7 @@
 REM ============================================
 REM GitOps TP - Quick Start Script for Windows
 REM File: START_GITOPS_TP.bat
-REM Version: 1.0.0
+REM Version: 1.0.2 - Fixed ANSI codes
 REM ============================================
 
 setlocal enabledelayedexpansion
@@ -23,39 +23,27 @@ if %errorLevel% neq 0 (
     exit /b 1
 )
 
-REM Set colors
-set RED=[91m
-set GREEN=[92m
-set YELLOW=[93m
-set BLUE=[94m
-set MAGENTA=[95m
-set CYAN=[96m
-set WHITE=[97m
-set RESET=[0m
-
 cls
-echo %CYAN%
 echo ============================================================
 echo                   GitOps TP - Quick Installer
-echo                        Version 1.0.0
+echo                        Version 1.0.2
 echo                   DevOps Master Course 2024
 echo ============================================================
-echo %RESET%
 echo.
 
 :MENU
-echo %YELLOW%Select an option:%RESET%
+echo Select an option:
 echo.
-echo   %CYAN%1.%RESET% Complete Installation (Docker + Project)
-echo   %CYAN%2.%RESET% Install Docker Desktop only
-echo   %CYAN%3.%RESET% Setup Project (Docker already installed)
-echo   %CYAN%4.%RESET% Start GitOps Stack
-echo   %CYAN%5.%RESET% Stop GitOps Stack
-echo   %CYAN%6.%RESET% Run Automatic Grading
-echo   %CYAN%7.%RESET% View Service Status
-echo   %CYAN%8.%RESET% Clean Everything (Uninstall)
-echo   %CYAN%9.%RESET% View Logs
-echo   %CYAN%0.%RESET% Exit
+echo   1. Complete Installation (Docker + Project)
+echo   2. Install Docker Desktop only
+echo   3. Setup Project (Docker already installed)
+echo   4. Start GitOps Stack
+echo   5. Stop GitOps Stack
+echo   6. Run Automatic Grading
+echo   7. View Service Status
+echo   8. Clean Everything (Uninstall)
+echo   9. View Logs
+echo   0. Exit
 echo.
 set /p choice="Enter your choice (0-9): "
 
@@ -70,23 +58,23 @@ if "%choice%"=="8" goto CLEAN_ALL
 if "%choice%"=="9" goto VIEW_LOGS
 if "%choice%"=="0" goto EXIT
 
-echo %RED%Invalid choice! Please try again.%RESET%
+echo Invalid choice! Please try again.
 timeout /t 2 >nul
 cls
 goto MENU
 
 :COMPLETE_INSTALL
 echo.
-echo %CYAN%Starting Complete Installation...%RESET%
+echo Starting Complete Installation...
 echo ============================================================
 
 REM Check if Docker is installed
 docker --version >nul 2>&1
 if %errorLevel% neq 0 (
-    echo %YELLOW%Docker not found. Installing Docker Desktop...%RESET%
+    echo Docker not found. Installing Docker Desktop...
     call :INSTALL_DOCKER_FUNC
 ) else (
-    echo %GREEN%Docker is already installed.%RESET%
+    echo Docker is already installed.
 )
 
 call :SETUP_PROJECT_FUNC
@@ -95,79 +83,79 @@ goto SHOW_URLS
 
 :INSTALL_DOCKER
 echo.
-echo %CYAN%Installing Docker Desktop...%RESET%
+echo Installing Docker Desktop...
 call :INSTALL_DOCKER_FUNC
 echo.
-echo %YELLOW%Please restart your computer and run this script again.%RESET%
+echo Please restart your computer and run this script again.
 pause
 exit /b 0
 
 :SETUP_PROJECT
 echo.
-echo %CYAN%Setting up GitOps Project...%RESET%
+echo Setting up GitOps Project...
 call :SETUP_PROJECT_FUNC
 goto MENU_RETURN
 
 :START_STACK
 echo.
-echo %CYAN%Starting GitOps Stack...%RESET%
+echo Starting GitOps Stack...
 call :START_STACK_FUNC
 goto SHOW_URLS
 
 :STOP_STACK
 echo.
-echo %CYAN%Stopping GitOps Stack...%RESET%
+echo Stopping GitOps Stack...
 cd /d C:\GitOpsTP
 docker-compose down
-echo %GREEN%Stack stopped successfully.%RESET%
+echo Stack stopped successfully.
 goto MENU_RETURN
 
 :RUN_GRADING
 echo.
-echo %CYAN%Running Automatic Grading...%RESET%
+echo Running Automatic Grading...
 echo.
 set /p studentName="Enter student name (optional): "
 set /p studentID="Enter student ID (optional): "
 echo.
-powershell -ExecutionPolicy Bypass -File "C:\GitOpsTP\Grade-GitOpsTP.ps1" -StudentName "%studentName%" -StudentID "%studentID%"
+powershell -ExecutionPolicy Bypass -File "C:\GitOpsTP\Scripts\Grade-GitOpsTP.ps1" -StudentName "%studentName%" -StudentID "%studentID%"
 echo.
-echo %GREEN%Grading complete! Check the report in C:\GitOpsTP\grading-report.html%RESET%
+echo Grading complete! Check the report in C:\GitOpsTP\grading-report.html
 start C:\GitOpsTP\grading-report.html
 goto MENU_RETURN
 
 :VIEW_STATUS
 echo.
-echo %CYAN%Service Status:%RESET%
+echo Service Status:
 echo ============================================================
 docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 echo.
-echo %CYAN%Network Status:%RESET%
+echo Network Status:
 docker network ls
 echo.
-echo %CYAN%Volume Status:%RESET%
+echo Volume Status:
 docker volume ls
 goto MENU_RETURN
 
 :CLEAN_ALL
 echo.
-echo %RED%WARNING: This will remove all GitOps TP components!%RESET%
+echo WARNING: This will remove all GitOps TP components!
 set /p confirm="Are you sure? (yes/no): "
 if /i "%confirm%"=="yes" (
-    echo %YELLOW%Cleaning up...%RESET%
+    echo Cleaning up...
     cd /d C:\GitOpsTP
     docker-compose down -v
     docker system prune -af
     cd /d C:\
     rmdir /s /q C:\GitOpsTP
-    echo %GREEN%Cleanup complete.%RESET%
+    echo Cleanup complete.
 ) else (
-    echo %YELLOW%Cleanup cancelled.%RESET%
+    echo Cleanup cancelled.
 )
 goto MENU_RETURN
 
 :VIEW_LOGS
 echo.
-echo %CYAN%Select service to view logs:%RESET%
+echo Select service to view logs:
 echo   1. Prometheus
 echo   2. Grafana
 echo   3. Jenkins
@@ -191,23 +179,20 @@ powershell -Command "Invoke-WebRequest -Uri 'https://desktop.docker.com/win/stab
 echo Installing Docker Desktop (this may take several minutes)...
 start /wait "" "%TEMP%\DockerDesktopInstaller.exe" install --quiet
 del "%TEMP%\DockerDesktopInstaller.exe"
-echo %GREEN%Docker Desktop installed successfully.%RESET%
+echo Docker Desktop installed successfully.
 exit /b 0
 
 :SETUP_PROJECT_FUNC
 echo Creating project directory...
 if not exist C:\GitOpsTP mkdir C:\GitOpsTP
 
-echo Checking for PowerShell script...
-if not exist C:\GitOpsTP\Install-GitOpsTP.ps1 (
-    echo Downloading installation script...
-    powershell -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/xquesnot/gitops-courses/refs/heads/main/Setup-GitOpsTP-QuickStart.ps1' -OutFile 'C:\GitOpsTP\Install-GitOpsTP.ps1'"
-)
+echo Copying files...
+xcopy /E /I /Y "%~dp0*" "C:\GitOpsTP\" >nul 2>&1
 
 echo Running PowerShell installation script...
-powershell -ExecutionPolicy Bypass -File "C:\GitOpsTP\Install-GitOpsTP.ps1" -AutoStart:$false
+powershell -ExecutionPolicy Bypass -File "C:\GitOpsTP\Installation\Install-GitOpsTP.ps1" -AutoStart:$false
 
-echo %GREEN%Project setup complete.%RESET%
+echo Project setup complete.
 exit /b 0
 
 :START_STACK_FUNC
@@ -218,23 +203,22 @@ echo Starting services...
 docker-compose up -d
 echo Waiting for services to be ready...
 timeout /t 15 >nul
-echo %GREEN%Stack started successfully.%RESET%
+echo Stack started successfully.
 exit /b 0
 
 :SHOW_URLS
 echo.
-echo %GREEN%============================================================%RESET%
-echo %GREEN%          GitOps Stack is Ready!%RESET%
-echo %GREEN%============================================================%RESET%
+echo ============================================================
+echo           GitOps Stack is Ready!
+echo ============================================================
 echo.
-echo %CYAN%Service URLs:%RESET%
-echo   Prometheus:  %YELLOW%http://localhost:9090%RESET%
-echo   Grafana:     %YELLOW%http://localhost:3000%RESET% (admin/gitops2024)
-echo   Jenkins:     %YELLOW%http://localhost:8081%RESET% (admin/jenkins2024)
-echo   SonarQube:   %YELLOW%http://localhost:9000%RESET% (admin/admin)
-echo   Application: %YELLOW%http://localhost:3001%RESET%
+echo Service URLs:
+echo   Prometheus:  http://localhost:9090
+echo   Grafana:     http://localhost:3000 (admin/gitops2024)
+echo   Jenkins:     http://localhost:8081 (admin/jenkins2024)
+echo   Application: http://localhost:3001
 echo.
-echo %CYAN%Quick Actions:%RESET%
+echo Quick Actions:
 echo   View Status:  docker-compose ps
 echo   View Logs:    docker-compose logs -f
 echo   Stop Stack:   docker-compose down
@@ -249,7 +233,7 @@ goto MENU
 
 :EXIT
 echo.
-echo %CYAN%Thank you for using GitOps TP!%RESET%
+echo Thank you for using GitOps TP!
 echo.
 timeout /t 2 >nul
 exit /b 0
