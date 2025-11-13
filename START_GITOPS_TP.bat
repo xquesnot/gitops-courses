@@ -2,7 +2,7 @@
 REM ============================================
 REM GitOps TP - Quick Start Script for Windows
 REM File: START_GITOPS_TP.bat
-REM Version: 1.0.2 - Fixed ANSI codes
+REM Version: 1.0.3 - Fixed PowerShell parameters
 REM ============================================
 
 setlocal enabledelayedexpansion
@@ -26,7 +26,7 @@ if %errorLevel% neq 0 (
 cls
 echo ============================================================
 echo                   GitOps TP - Quick Installer
-echo                        Version 1.0.2
+echo                        Version 1.0.3
 echo                   DevOps Master Course 2024
 echo ============================================================
 echo.
@@ -117,7 +117,7 @@ echo.
 set /p studentName="Enter student name (optional): "
 set /p studentID="Enter student ID (optional): "
 echo.
-powershell -ExecutionPolicy Bypass -File "C:\GitOpsTP\Scripts\Grade-GitOpsTP.ps1" -StudentName "%studentName%" -StudentID "%studentID%"
+powershell -ExecutionPolicy Bypass -Command "& {& 'C:\GitOpsTP\Scripts\Grade-GitOpsTP.ps1' -StudentName '%studentName%' -StudentID '%studentID%'}"
 echo.
 echo Grading complete! Check the report in C:\GitOpsTP\grading-report.html
 start C:\GitOpsTP\grading-report.html
@@ -190,7 +190,8 @@ echo Copying files...
 xcopy /E /I /Y "%~dp0*" "C:\GitOpsTP\" >nul 2>&1
 
 echo Running PowerShell installation script...
-powershell -ExecutionPolicy Bypass -File "C:\GitOpsTP\Installation\Install-GitOpsTP.ps1" -AutoStart:$false
+REM Fixed: Using proper syntax for PowerShell switch parameter
+powershell -ExecutionPolicy Bypass -Command "& {& 'C:\GitOpsTP\Installation\Install-GitOpsTP.ps1'}"
 
 echo Project setup complete.
 exit /b 0
