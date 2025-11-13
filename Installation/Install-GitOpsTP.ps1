@@ -1,7 +1,7 @@
 # ============================================
-# GitOps TP - Installation Script for Windows
-# File: Install-GitOpsTP.ps1
-# Version: 1.0.0
+# GitOps TP - Complete Setup Script for Windows
+# File: Setup-GitOpsEnvironment.ps1
+# Version: 2.0.0 - Fixed and Unified
 # Author: DevOps Master Course
 # ============================================
 
@@ -18,6 +18,10 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = 'SilentlyContinue'
 
+# ==============================================
+# HELPER FUNCTIONS
+# ==============================================
+
 # Colors for output
 function Write-ColorOutput {
     param([string]$Message, [string]$Color = "White")
@@ -29,20 +33,23 @@ function Write-Error { Write-ColorOutput "❌ $args" "Red" }
 function Write-Warning { Write-ColorOutput "⚠️ $args" "Yellow" }
 function Write-Info { Write-ColorOutput "ℹ️ $args" "Cyan" }
 
-# Banner
+# Banner Function (DÉFINITION AJOUTÉE ICI)
 function Show-Banner {
     Clear-Host
     Write-Host @"
 ╔══════════════════════════════════════════════════════════════╗
-║                    GitOps TP - Auto Installer                 ║
-║                         Version 1.0.0                         ║
+║                 GitOps TP - Complete Setup                    ║
+║                         Version 2.0.0                         ║
 ║                    DevOps Master Course 2024                  ║
 ╚══════════════════════════════════════════════════════════════╝
 "@ -ForegroundColor Cyan
     Write-Host ""
 }
 
-# Check Prerequisites
+# ==============================================
+# PREREQUISITES CHECKING
+# ==============================================
+
 function Test-Prerequisites {
     Write-Info "Checking prerequisites..."
     
@@ -109,7 +116,10 @@ function Install-Docker {
     }
 }
 
-# Create Directory Structure
+# ==============================================
+# PROJECT STRUCTURE CREATION
+# ==============================================
+
 function Initialize-ProjectStructure {
     Write-Info "Creating project structure at $InstallPath..."
     
@@ -149,7 +159,251 @@ function Initialize-ProjectStructure {
     Write-Success "Project structure created"
 }
 
-# Create Configuration Files
+# ==============================================
+# DOCKER-COMPOSE.YML CREATION
+# ==============================================
+
+function New-DockerComposeFile {
+    Write-Info "Creating Docker Compose configuration..."
+    
+    $dockerComposeContent = @'
+version: '3.9'
+
+networks:
+  gitops-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  jenkins_data:
+    driver: local
+  gitlab_config:
+    driver: local
+  gitlab_logs:
+    driver: local
+  gitlab_data:
+    driver: local
+  sonarqube_data:
+    driver: local
+  sonarqube_logs:
+    driver: local
+  sonarqube_extensions:
+    driver: local
+  postgres_data:
+    driver: local
+  trivy_cache:
+    driver: local
+  portainer_data:
+    driver: local
+
+services:
+  # ============================================
+  # MONITORING STACK
+  # ============================================
+  
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: gitops-prometheus
+    hostname: prometheus
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.10
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--storage.tsdb.retention.time=30d'
+    labels:
+      - "monitoring.service=prometheus"
+      - "monitoring.type=timeseries"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: gitops-grafana
+    hostname: grafana
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.11
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=gitops2024
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource,redis-datasource
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    depends_on:
+      - prometheus
+    labels:
+      - "monitoring.service=grafana"
+      - "monitoring.type=visualization"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: gitops-alertmanager
+    hostname: alertmanager
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.12
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./config/alertmanager:/etc/alertmanager:ro
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    labels:
+      - "monitoring.service=alertmanager"
+      - "monitoring.type=alerting"
+
+  # CI/CD Stack
+  jenkins:
+    image: jenkins/jenkins:2.426.1-lts
+    container_name: gitops-jenkins
+    hostname: jenkins
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.20
+    ports:
+      - "8081:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_data:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config/jenkins/jobs:/var/jenkins_home/jobs:ro
+      - ./config/jenkins/init.groovy.d:/usr/share/jenkins/ref/init.groovy.d:ro
+    environment:
+      - JENKINS_OPTS=--prefix=/
+      - JAVA_OPTS=-Duser.timezone=Europe/Paris -Djenkins.install.runSetupWizard=false
+      - JENKINS_ADMIN_ID=admin
+      - JENKINS_ADMIN_PASSWORD=jenkins2024
+    user: root
+    labels:
+      - "cicd.service=jenkins"
+      - "cicd.type=automation"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/login || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # Node Exporter
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: gitops-node-exporter
+    hostname: node-exporter
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.13
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    labels:
+      - "monitoring.service=node-exporter"
+      - "monitoring.type=metrics-collector"
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: gitops-redis
+    hostname: redis
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.41
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./config/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    labels:
+      - "storage.service=redis"
+      - "storage.type=cache"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Application
+  app:
+    build:
+      context: ./application
+      dockerfile: Dockerfile
+    container_name: gitops-app
+    hostname: app
+    restart: unless-stopped
+    networks:
+      gitops-network:
+        ipv4_address: 172.20.0.50
+    ports:
+      - "3001:3000"
+    environment:
+      - NODE_ENV=production
+      - PROMETHEUS_ENABLED=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+    labels:
+      - "app.service=monitoring-app"
+      - "app.version=1.0.0"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+'@
+    
+    Set-Content -Path "$InstallPath\docker-compose.yml" -Value $dockerComposeContent
+    Write-Success "Docker Compose configuration created"
+}
+
+# ==============================================
+# CONFIGURATION FILES CREATION
+# ==============================================
+
 function New-ConfigurationFiles {
     Write-Info "Creating configuration files..."
     
@@ -178,10 +432,6 @@ scrape_configs:
   - job_name: 'node-exporter'
     static_configs:
       - targets: ['node-exporter:9100']
-  
-  - job_name: 'cadvisor'
-    static_configs:
-      - targets: ['cadvisor:8080']
   
   - job_name: 'grafana'
     static_configs:
@@ -221,24 +471,6 @@ groups:
         annotations:
           summary: "High memory usage detected"
           description: "Memory usage is above 85% (current value: {{ `$value }}%)"
-      
-      - alert: HighCPUUsage
-        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High CPU usage detected"
-          description: "CPU usage is above 80% (current value: {{ `$value }}%)"
-      
-      - alert: ContainerDown
-        expr: time() - container_last_seen{name=~"gitops-.*"} > 60
-        for: 1m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Container {{ `$labels.name }} is down"
-          description: "Container {{ `$labels.name }} has been down for more than 1 minute"
 "@
     Set-Content -Path "$InstallPath\config\prometheus\rules\alerts.yml" -Value $alertRules
     
@@ -294,20 +526,6 @@ receivers:
         send_resolved: true
 "@
     Set-Content -Path "$InstallPath\config\alertmanager\alertmanager.yml" -Value $alertmanagerConfig
-    
-    # PostgreSQL Init Script
-    $postgresInit = @"
--- Create SonarQube database and user
-CREATE USER sonar WITH PASSWORD 'sonar2024';
-CREATE DATABASE sonarqube OWNER sonar;
-GRANT ALL PRIVILEGES ON DATABASE sonarqube TO sonar;
-
--- Create GitOps application database
-CREATE DATABASE gitops_app;
-CREATE USER app_user WITH PASSWORD 'app2024';
-GRANT ALL PRIVILEGES ON DATABASE gitops_app TO app_user;
-"@
-    Set-Content -Path "$InstallPath\config\postgres\init.sql" -Value $postgresInit
     
     # Redis Configuration
     $redisConfig = @"
@@ -366,7 +584,10 @@ instance.save()
     Write-Success "Configuration files created"
 }
 
-# Create Application Files
+# ==============================================
+# APPLICATION FILES CREATION
+# ==============================================
+
 function New-ApplicationFiles {
     Write-Info "Creating sample application..."
     
@@ -504,68 +725,158 @@ app.listen(PORT, () => {
     Write-Success "Application files created"
 }
 
-# Create Docker Compose Override for Windows
-function New-DockerComposeOverride {
-    Write-Info "Creating Docker Compose override for Windows..."
-    
-    $overrideContent = @"
-# Docker Compose Override for Windows
-version: '3.9'
+# ==============================================
+# JENKINSFILE CREATION
+# ==============================================
 
-services:
-  node-exporter:
-    volumes:
-      # Windows-specific volume mappings
-      - type: bind
-        source: /proc
-        target: /host/proc
-        read_only: true
-      - type: bind
-        source: /sys
-        target: /host/sys
-        read_only: true
-      - type: bind
-        source: /
-        target: /rootfs
-        read_only: true
+function New-Jenkinsfile {
+    Write-Info "Creating Jenkinsfile..."
     
-  cadvisor:
-    volumes:
-      # Windows Docker Desktop paths
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
+    $jenkinsfileContent = @'
+pipeline {
+    agent any
     
-  jenkins:
-    volumes:
-      # Windows Docker socket path
-      - //var/run/docker.sock:/var/run/docker.sock
+    environment {
+        DOCKER_REGISTRY = 'docker.io'
+        IMAGE_NAME = 'gitops-app'
+        IMAGE_TAG = "${BUILD_NUMBER}"
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                script {
+                    docker.build("${IMAGE_NAME}:${IMAGE_TAG}", "./application")
+                }
+            }
+        }
+        
+        stage('Test') {
+            steps {
+                script {
+                    docker.run("${IMAGE_NAME}:${IMAGE_TAG}", "npm test")
+                }
+            }
+        }
+        
+        stage('Security Scan') {
+            steps {
+                script {
+                    sh "trivy image --severity HIGH,CRITICAL ${IMAGE_NAME}:${IMAGE_TAG}"
+                }
+            }
+        }
+        
+        stage('Deploy') {
+            steps {
+                script {
+                    sh "docker-compose up -d app"
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo '✅ Pipeline completed successfully!'
+        }
+        failure {
+            echo '❌ Pipeline failed!'
+        }
+    }
+}
+'@
+    
+    Set-Content -Path "$InstallPath\Jenkinsfile" -Value $jenkinsfileContent
+    Write-Success "Jenkinsfile created"
+}
+
+# ==============================================
+# README CREATION
+# ==============================================
+
+function New-README {
+    Write-Info "Creating README..."
+    
+    $readmeContent = @"
+# GitOps TP - Monitoring Stack
+
+## 📦 Services Included
+
+- **Prometheus** (9090): Time-series metrics database
+- **Grafana** (3000): Visualization and dashboards
+- **Jenkins** (8081): CI/CD automation server
+- **AlertManager** (9093): Alert management
+- **Node Exporter** (9100): System metrics
+- **Redis** (6379): Cache and queue
+- **Application** (3001): Sample monitoring app
+
+## 🚀 Quick Start
+
+\`\`\`powershell
+# Start all services
+docker-compose up -d
+
+# Check status
+docker-compose ps
+
+# View logs
+docker-compose logs -f [service-name]
+\`\`\`
+
+## 🔐 Default Credentials
+
+| Service | Username | Password |
+|---------|----------|----------|
+| Grafana | admin | gitops2024 |
+| Jenkins | admin | jenkins2024 |
+
+## 📊 Monitoring
+
+1. Access Grafana at http://localhost:3000
+2. Prometheus datasource is pre-configured
+3. Import dashboards from config/grafana/dashboards/
+
+## 🔧 Configuration
+
+All configuration files are in the \`config/\` directory:
+- \`prometheus/\`: Prometheus configuration and rules
+- \`grafana/\`: Grafana provisioning
+- \`jenkins/\`: Jenkins initialization scripts
+- \`alertmanager/\`: Alert routing configuration
+
+## 📝 Testing
+
+Run the grading script:
+\`\`\`powershell
+.\Grade-GitOpsTP.ps1
+\`\`\`
+
+## 🛑 Stopping Services
+
+\`\`\`powershell
+# Stop all services
+docker-compose down
+
+# Stop and remove volumes
+docker-compose down -v
+\`\`\`
 "@
     
-    if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
-        Set-Content -Path "$InstallPath\docker-compose.override.yml" -Value $overrideContent
-        Write-Success "Windows-specific Docker Compose override created"
-    }
+    Set-Content -Path "$InstallPath\README.md" -Value $readmeContent
+    Write-Success "README created"
 }
 
-# Copy main docker-compose.yml
-function Copy-DockerComposeFile {
-    Write-Info "Setting up Docker Compose configuration..."
-    
-    # Copy the docker-compose.yml content from the first file
-    Copy-Item -Path "$PSScriptRoot\docker-compose.yml" -Destination "$InstallPath\docker-compose.yml" -Force -ErrorAction SilentlyContinue
-    
-    if (-not (Test-Path "$InstallPath\docker-compose.yml")) {
-        Write-Warning "docker-compose.yml not found, creating from embedded template..."
-        # Here you would embed the full docker-compose.yml content
-        # For brevity, using a placeholder
-        Set-Content -Path "$InstallPath\docker-compose.yml" -Value (Get-Content -Raw -Path "$PSScriptRoot\docker-compose.yml")
-    }
-    
-    Write-Success "Docker Compose configuration ready"
-}
+# ==============================================
+# SERVICES STARTUP
+# ==============================================
 
-# Start Services
 function Start-GitOpsStack {
     Write-Info "Starting GitOps stack..."
     
@@ -603,7 +914,10 @@ function Start-GitOpsStack {
     Write-Success "GitOps stack started"
 }
 
-# Display Access Information
+# ==============================================
+# ACCESS INFORMATION DISPLAY
+# ==============================================
+
 function Show-AccessInfo {
     Write-Host ""
     Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Green
@@ -611,14 +925,12 @@ function Show-AccessInfo {
     Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Green
     Write-Host ""
     Write-Host "📦 Services Access URLs:" -ForegroundColor Cyan
-    Write-Host "  • Prometheus:  http://localhost:9090" -ForegroundColor White
-    Write-Host "  • Grafana:     http://localhost:3000  (admin / gitops2024)" -ForegroundColor White
-    Write-Host "  • Jenkins:     http://localhost:8081  (admin / jenkins2024)" -ForegroundColor White
-    Write-Host "  • SonarQube:   http://localhost:9000  (admin / admin)" -ForegroundColor White
-    Write-Host "  • GitLab:      http://localhost:8082  (root / gitlab2024root)" -ForegroundColor White
-    Write-Host "  • Portainer:   http://localhost:9001" -ForegroundColor White
-    Write-Host "  • cAdvisor:    http://localhost:8080" -ForegroundColor White
-    Write-Host "  • Application: http://localhost:3001" -ForegroundColor White
+    Write-Host "  • Prometheus:    http://localhost:9090" -ForegroundColor White
+    Write-Host "  • Grafana:       http://localhost:3000  (admin / gitops2024)" -ForegroundColor White
+    Write-Host "  • Jenkins:       http://localhost:8081  (admin / jenkins2024)" -ForegroundColor White
+    Write-Host "  • AlertManager:  http://localhost:9093" -ForegroundColor White
+    Write-Host "  • Node Exporter: http://localhost:9100/metrics" -ForegroundColor White
+    Write-Host "  • Application:   http://localhost:3001" -ForegroundColor White
     Write-Host ""
     Write-Host "📁 Project Location: $InstallPath" -ForegroundColor Yellow
     Write-Host ""
@@ -627,25 +939,55 @@ function Show-AccessInfo {
     Write-Host "  • View logs:     docker-compose logs -f [service]" -ForegroundColor White
     Write-Host "  • Stop stack:    docker-compose down" -ForegroundColor White
     Write-Host "  • Restart:       docker-compose restart" -ForegroundColor White
-    Write-Host "  • Run tests:     .\Run-Tests.ps1" -ForegroundColor White
+    Write-Host "  • Run tests:     .\Grade-GitOpsTP.ps1" -ForegroundColor White
+    Write-Host ""
+    Write-Host "📚 Documentation: Check README.md in $InstallPath" -ForegroundColor Yellow
     Write-Host ""
 }
 
-# Main Installation Flow
-function Install-GitOpsTP {
+# ==============================================
+# MAIN INSTALLATION FLOW
+# ==============================================
+
+function Install-GitOpsEnvironment {
     Show-Banner
     
+    # Check prerequisites
     if (-not (Test-Prerequisites)) {
         Write-Error "Prerequisites check failed. Please install missing components and try again."
+        Write-Host ""
+        Write-Host "For Docker installation, visit: https://docs.docker.com/desktop/install/windows-install/" -ForegroundColor Yellow
         exit 1
     }
     
+    # Create project structure
     Initialize-ProjectStructure
+    
+    # Create all configuration files
+    New-DockerComposeFile
     New-ConfigurationFiles
     New-ApplicationFiles
-    Copy-DockerComposeFile
-    New-DockerComposeOverride
+    New-Jenkinsfile
+    New-README
     
+    # Copy grading script if it exists
+    if (Test-Path "$PSScriptRoot\Grade-GitOpsTP.ps1") {
+        Copy-Item -Path "$PSScriptRoot\Grade-GitOpsTP.ps1" -Destination "$InstallPath\Grade-GitOpsTP.ps1" -Force
+        Write-Success "Grading script copied"
+    }
+    
+    # Create uninstall script
+    $uninstallScript = @"
+# Uninstall GitOps TP
+Write-Host "Stopping and removing GitOps TP..." -ForegroundColor Yellow
+docker-compose -f "$InstallPath\docker-compose.yml" down -v
+docker system prune -af
+Remove-Item -Path "$InstallPath" -Recurse -Force -ErrorAction SilentlyContinue
+Write-Host "GitOps TP uninstalled successfully" -ForegroundColor Green
+"@
+    Set-Content -Path "$InstallPath\Uninstall-GitOpsTP.ps1" -Value $uninstallScript
+    
+    # Start services if requested
     if ($AutoStart) {
         Start-GitOpsStack
     } else {
@@ -654,26 +996,28 @@ function Install-GitOpsTP {
         Write-Host "  docker-compose up -d" -ForegroundColor Yellow
     }
     
+    # Show access information
     Show-AccessInfo
     
-    # Create uninstall script
-    $uninstallScript = @"
-# Uninstall GitOps TP
-docker-compose -f "$InstallPath\docker-compose.yml" down -v
-docker system prune -af
-Remove-Item -Path "$InstallPath" -Recurse -Force
-Write-Host "GitOps TP uninstalled successfully" -ForegroundColor Green
-"@
-    Set-Content -Path "$InstallPath\Uninstall-GitOpsTP.ps1" -Value $uninstallScript
-    
     Write-Success "Installation completed successfully!"
+    Write-Host ""
+    Write-Host "Next steps:" -ForegroundColor Cyan
+    Write-Host "1. cd $InstallPath" -ForegroundColor White
+    Write-Host "2. docker-compose up -d" -ForegroundColor White
+    Write-Host "3. Access services using the URLs above" -ForegroundColor White
 }
 
-# Run installation
+# ==============================================
+# SCRIPT EXECUTION
+# ==============================================
+
 try {
-    Install-GitOpsTP
+    Install-GitOpsEnvironment
 }
 catch {
     Write-Error "Installation failed: $_"
+    Write-Host ""
+    Write-Host "Stack trace:" -ForegroundColor Yellow
+    Write-Host $_.Exception.StackTrace -ForegroundColor Gray
     exit 1
 }
