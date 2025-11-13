@@ -1,332 +1,372 @@
 # ============================================
-# GitOps TP - Quick Setup All-in-One Script
-# File: Setup-GitOpsTP-QuickStart.ps1
-# Version: 1.0.0
-# Single file to rule them all!
+# GitOps TP - Automatic Grading Script
+# File: Grade-GitOpsTP.ps1
+# Version: 1.0.1 - Fixed for Windows
 # ============================================
 
-#Requires -RunAsAdministrator
-
 param(
-    [switch]$InstallOnly = $false,
-    [switch]$TestOnly = $false,
-    [switch]$GradeOnly = $false
+    [string]$ProjectPath = "C:\GitOpsTP",
+    [string]$StudentName = "",
+    [string]$StudentID = "",
+    [switch]$GenerateReport = $true,
+    [switch]$Verbose = $false
 )
 
-# Embedded Docker Compose Configuration
-$DockerComposeContent = @'
-version: '3.9'
+# Configuration
+$ErrorActionPreference = "SilentlyContinue"
+$script:TotalPoints = 0
+$script:MaxPoints = 100
+$script:TestResults = @()
 
-networks:
-  gitops-network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
+# Grade Categories
+$GradeCategories = @{
+    "Infrastructure" = 20
+    "Configuration" = 15
+    "Security" = 20
+    "CICD" = 20
+    "Monitoring" = 15
+    "Documentation" = 5
+    "BestPractices" = 5
+}
 
-volumes:
-  prometheus_data:
-  grafana_data:
-  jenkins_data:
-
-services:
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: gitops-prometheus
-    restart: unless-stopped
-    networks:
-      - gitops-network
-    ports:
-      - "9090:9090"
-    volumes:
-      - prometheus_data:/prometheus
-      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: gitops-grafana
-    restart: unless-stopped
-    networks:
-      - gitops-network
-    ports:
-      - "3000:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=gitops2024
-    depends_on:
-      - prometheus
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  jenkins:
-    image: jenkins/jenkins:lts
-    container_name: gitops-jenkins
-    restart: unless-stopped
-    networks:
-      - gitops-network
-    ports:
-      - "8081:8080"
-      - "50000:50000"
-    volumes:
-      - jenkins_data:/var/jenkins_home
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      - JENKINS_OPTS=--prefix=/
-    user: root
-
-  node-exporter:
-    image: prom/node-exporter:latest
-    container_name: gitops-node-exporter
-    restart: unless-stopped
-    networks:
-      - gitops-network
-    ports:
-      - "9100:9100"
-    command:
-      - '--path.procfs=/host/proc'
-      - '--path.rootfs=/rootfs'
-      - '--path.sysfs=/host/sys'
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-
-  app:
-    image: nginx:alpine
-    container_name: gitops-app
-    restart: unless-stopped
-    networks:
-      - gitops-network
-    ports:
-      - "3001:80"
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-'@
-
-# Prometheus Configuration
-$PrometheusConfig = @'
-global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
-
-scrape_configs:
-  - job_name: 'prometheus'
-    static_configs:
-      - targets: ['localhost:9090']
-  
-  - job_name: 'node-exporter'
-    static_configs:
-      - targets: ['node-exporter:9100']
-  
-  - job_name: 'grafana'
-    static_configs:
-      - targets: ['grafana:3000']
-  
-  - job_name: 'app'
-    static_configs:
-      - targets: ['app:80']
-'@
-
-# Grafana Datasource Configuration
-$GrafanaDatasource = @'
-apiVersion: 1
-
-datasources:
-  - name: Prometheus
-    type: prometheus
-    access: proxy
-    url: http://prometheus:9090
-    isDefault: true
-'@
-
-# Quick Grade Function
-function Quick-Grade {
-    Write-Host "🎓 Running Quick Grading..." -ForegroundColor Cyan
-    
-    $score = 0
-    $maxScore = 100
-    
-    # Check Docker
-    if (docker version 2>$null) {
-        $score += 10
-        Write-Host "✅ Docker installed (+10)" -ForegroundColor Green
-    }
-    
-    # Check Containers
-    $containers = docker ps --format "{{.Names}}" 2>$null
-    $requiredContainers = @("gitops-prometheus", "gitops-grafana", "gitops-jenkins", "gitops-app")
-    foreach ($container in $requiredContainers) {
-        if ($containers -contains $container) {
-            $score += 10
-            Write-Host "✅ $container running (+10)" -ForegroundColor Green
-        }
-        else {
-            Write-Host "❌ $container not found" -ForegroundColor Red
-        }
-    }
-    
-    # Check Services
-    $services = @(
-        @{Name="Prometheus"; URL="http://localhost:9090/-/healthy"; Points=15},
-        @{Name="Grafana"; URL="http://localhost:3000/api/health"; Points=15},
-        @{Name="Application"; URL="http://localhost:3001"; Points=10}
+# Test Result Function
+function Write-TestResult {
+    param(
+        [string]$TestName,
+        [int]$Points,
+        [int]$MaxPoints,
+        [bool]$Passed,
+        [string]$Details = ""
     )
     
-    foreach ($service in $services) {
+    $status = if ($Passed) { "[PASS]" } else { "[FAIL]" }
+    $color = if ($Passed) { "Green" } else { "Red" }
+    
+    Write-Host "$status " -NoNewline -ForegroundColor $color
+    Write-Host "$TestName " -NoNewline
+    Write-Host "[$Points/$MaxPoints points]" -ForegroundColor Yellow
+    
+    if ($Details -and $Verbose) {
+        Write-Host "  Details: $Details" -ForegroundColor Gray
+    }
+    
+    $script:TestResults += [PSCustomObject]@{
+        TestName = $TestName
+        Category = $currentCategory
+        Points = $Points
+        MaxPoints = $MaxPoints
+        Passed = $Passed
+        Details = $Details
+        Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    }
+    
+    $script:TotalPoints += $Points
+}
+
+# Test Docker Environment
+function Test-DockerEnvironment {
+    $currentCategory = "Infrastructure"
+    Write-Host "`nTesting Docker Environment..." -ForegroundColor Cyan
+    
+    $dockerRunning = $null -ne (docker version 2>$null)
+    Write-TestResult -TestName "Docker daemon running" -Points $(if($dockerRunning){2}else{0}) -MaxPoints 2 -Passed $dockerRunning
+    
+    $composeInstalled = $null -ne (docker-compose version 2>$null)
+    Write-TestResult -TestName "Docker Compose installed" -Points $(if($composeInstalled){2}else{0}) -MaxPoints 2 -Passed $composeInstalled
+    
+    $composeFile = Test-Path "$ProjectPath\docker-compose.yml"
+    Write-TestResult -TestName "docker-compose.yml exists" -Points $(if($composeFile){3}else{0}) -MaxPoints 3 -Passed $composeFile
+    
+    if ($composeFile) {
+        Set-Location $ProjectPath
+        $validation = docker-compose config -q 2>&1
+        $valid = $LASTEXITCODE -eq 0
+        Write-TestResult -TestName "docker-compose.yml valid" -Points $(if($valid){3}else{0}) -MaxPoints 3 -Passed $valid
+    }
+}
+
+# Test Running Containers
+function Test-RunningContainers {
+    $currentCategory = "Infrastructure"
+    Write-Host "`nTesting Running Containers..." -ForegroundColor Cyan
+    
+    $requiredContainers = @(
+        @{Name="prometheus"; Points=2},
+        @{Name="grafana"; Points=2},
+        @{Name="jenkins"; Points=2},
+        @{Name="node-exporter"; Points=1},
+        @{Name="app"; Points=1}
+    )
+    
+    $runningContainers = docker ps --format "{{.Names}}" 2>$null
+    
+    foreach ($container in $requiredContainers) {
+        $containerName = "gitops-$($container.Name)"
+        $isRunning = $runningContainers -contains $containerName
+        
+        if ($isRunning) {
+            $health = docker inspect $containerName --format='{{.State.Health.Status}}' 2>$null
+            $isHealthy = $health -eq "healthy" -or $health -eq $null
+            $points = if($isHealthy) { $container.Points } else { [Math]::Floor($container.Points/2) }
+            $details = if($isHealthy) { "Container healthy" } else { "Container unhealthy" }
+        } else {
+            $points = 0
+            $details = "Container not found"
+        }
+        
+        Write-TestResult -TestName "Container: $($container.Name)" -Points $points -MaxPoints $container.Points -Passed $isRunning -Details $details
+    }
+}
+
+# Test Service Endpoints
+function Test-ServiceEndpoints {
+    $currentCategory = "Monitoring"
+    Write-Host "`nTesting Service Endpoints..." -ForegroundColor Cyan
+    
+    $endpoints = @(
+        @{Name="Prometheus"; URL="http://localhost:9090/-/healthy"; Points=3},
+        @{Name="Grafana"; URL="http://localhost:3000/api/health"; Points=3},
+        @{Name="Jenkins"; URL="http://localhost:8081/login"; Points=3},
+        @{Name="Application"; URL="http://localhost:3001/health"; Points=3}
+    )
+    
+    foreach ($endpoint in $endpoints) {
         try {
-            $response = Invoke-WebRequest -Uri $service.URL -TimeoutSec 3 -UseBasicParsing 2>$null
-            if ($response.StatusCode -eq 200 -or $response.StatusCode -eq 302) {
-                $score += $service.Points
-                Write-Host "✅ $($service.Name) accessible (+$($service.Points))" -ForegroundColor Green
-            }
+            $response = Invoke-WebRequest -Uri $endpoint.URL -TimeoutSec 5 -UseBasicParsing
+            $accessible = $response.StatusCode -eq 200
+            $points = if($accessible) { $endpoint.Points } else { 0 }
+            $details = "HTTP $($response.StatusCode)"
         }
         catch {
-            Write-Host "❌ $($service.Name) not accessible" -ForegroundColor Red
+            $accessible = $false
+            $points = 0
+            $details = "Connection failed"
         }
+        
+        Write-TestResult -TestName "$($endpoint.Name) endpoint" -Points $points -MaxPoints $endpoint.Points -Passed $accessible -Details $details
     }
-    
-    # Check Configuration Files
-    if (Test-Path "C:\GitOpsTP\config\prometheus\prometheus.yml") {
-        $score += 10
-        Write-Host "✅ Prometheus config exists (+10)" -ForegroundColor Green
-    }
-    
-    if (Test-Path "C:\GitOpsTP\docker-compose.yml") {
-        $score += 10
-        Write-Host "✅ Docker Compose file exists (+10)" -ForegroundColor Green
-    }
-    
-    # Calculate Grade
-    $percentage = [Math]::Round(($score / $maxScore) * 100, 1)
-    $grade = [Math]::Round(($score / $maxScore) * 20, 2)
-    
-    Write-Host ""
-    Write-Host "════════════════════════════════" -ForegroundColor Cyan
-    Write-Host "Score: $score / $maxScore" -ForegroundColor Yellow
-    Write-Host "Percentage: $percentage%" -ForegroundColor Yellow
-    Write-Host "Grade: $grade / 20" -ForegroundColor $(if($grade -ge 14){"Green"}elseif($grade -ge 10){"Yellow"}else{"Red"})
-    Write-Host "════════════════════════════════" -ForegroundColor Cyan
 }
 
-# Main Setup Function
-function Setup-GitOps {
-    $installPath = "C:\GitOpsTP"
+# Test Prometheus Configuration
+function Test-PrometheusConfiguration {
+    $currentCategory = "Configuration"
+    Write-Host "`nTesting Prometheus Configuration..." -ForegroundColor Cyan
     
-    Write-Host @"
-╔══════════════════════════════════════╗
-║   GitOps TP - Quick Start Setup      ║
-║          All-in-One Script           ║
-╚══════════════════════════════════════╝
-"@ -ForegroundColor Cyan
+    $configExists = Test-Path "$ProjectPath\config\prometheus\prometheus.yml"
+    Write-TestResult -TestName "Prometheus config exists" -Points $(if($configExists){2}else{0}) -MaxPoints 2 -Passed $configExists
     
-    # Create directories
-    Write-Host "📁 Creating project structure..." -ForegroundColor Yellow
-    New-Item -ItemType Directory -Path $installPath -Force | Out-Null
-    New-Item -ItemType Directory -Path "$installPath\config\prometheus" -Force | Out-Null
-    New-Item -ItemType Directory -Path "$installPath\config\grafana\provisioning\datasources" -Force | Out-Null
-    
-    # Write configuration files
-    Write-Host "📝 Writing configuration files..." -ForegroundColor Yellow
-    $DockerComposeContent | Out-File -FilePath "$installPath\docker-compose.yml" -Encoding UTF8
-    $PrometheusConfig | Out-File -FilePath "$installPath\config\prometheus\prometheus.yml" -Encoding UTF8
-    $GrafanaDatasource | Out-File -FilePath "$installPath\config\grafana\provisioning\datasources\prometheus.yml" -Encoding UTF8
-    
-    # Start Docker Stack
-    Write-Host "🚀 Starting Docker stack..." -ForegroundColor Yellow
-    Set-Location $installPath
-    docker-compose pull 2>&1 | Out-String | Out-Null
-    docker-compose up -d 2>&1 | Out-String | Out-Null
-    
-    # Wait for services
-    Write-Host "⏳ Waiting for services to start..." -ForegroundColor Yellow
-    Start-Sleep -Seconds 15
-    
-    # Display URLs
-    Write-Host ""
-    Write-Host "✅ Installation Complete!" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "📌 Access URLs:" -ForegroundColor Cyan
-    Write-Host "  Prometheus:  http://localhost:9090" -ForegroundColor White
-    Write-Host "  Grafana:     http://localhost:3000 (admin/gitops2024)" -ForegroundColor White
-    Write-Host "  Jenkins:     http://localhost:8081" -ForegroundColor White
-    Write-Host "  Application: http://localhost:3001" -ForegroundColor White
-}
-
-# Check Docker Function
-function Test-DockerInstalled {
     try {
-        docker version 2>&1 | Out-Null
-        return $true
+        $targetsResponse = Invoke-RestMethod -Uri "http://localhost:9090/api/v1/targets" -TimeoutSec 5
+        $activeTargets = $targetsResponse.data.activeTargets
+        $allTargetsUp = ($activeTargets | Where-Object { $_.health -ne "up" }).Count -eq 0
+        $points = if($allTargetsUp) { 3 } elseif($activeTargets.Count -gt 0) { 2 } else { 0 }
+        Write-TestResult -TestName "Prometheus targets" -Points $points -MaxPoints 3 -Passed ($activeTargets.Count -gt 0) -Details "$($activeTargets.Count) targets"
     }
     catch {
-        return $false
+        Write-TestResult -TestName "Prometheus targets" -Points 0 -MaxPoints 3 -Passed $false -Details "API not accessible"
     }
 }
 
-# Main Execution
-try {
-    if ($TestOnly) {
-        if (-not (Test-DockerInstalled)) {
-            Write-Host "❌ Docker is not installed!" -ForegroundColor Red
-            exit 1
-        }
-        # Run quick tests
-        Write-Host "Running tests..." -ForegroundColor Cyan
-        docker ps
-        exit 0
+# Test Security
+function Test-SecurityScanning {
+    $currentCategory = "Security"
+    Write-Host "`nTesting Security Implementation..." -ForegroundColor Cyan
+    
+    $trivyInstalled = $null -ne (trivy --version 2>$null)
+    Write-TestResult -TestName "Trivy scanner available" -Points $(if($trivyInstalled){3}else{0}) -MaxPoints 3 -Passed $trivyInstalled
+    
+    $checkovInstalled = $null -ne (checkov --version 2>$null)
+    Write-TestResult -TestName "Checkov scanner available" -Points $(if($checkovInstalled){3}else{0}) -MaxPoints 3 -Passed $checkovInstalled
+    
+    $scanReports = Get-ChildItem -Path $ProjectPath -Filter "*security*.json" -Recurse 2>$null
+    $hasReports = $scanReports.Count -gt 0
+    Write-TestResult -TestName "Security scan reports" -Points $(if($hasReports){4}else{0}) -MaxPoints 4 -Passed $hasReports
+}
+
+# Test Jenkins Pipeline
+function Test-JenkinsPipeline {
+    $currentCategory = "CICD"
+    Write-Host "`nTesting Jenkins CI/CD Pipeline..." -ForegroundColor Cyan
+    
+    $jenkinsfileExists = Test-Path "$ProjectPath\Jenkinsfile"
+    Write-TestResult -TestName "Jenkinsfile exists" -Points $(if($jenkinsfileExists){3}else{0}) -MaxPoints 3 -Passed $jenkinsfileExists
+    
+    try {
+        $response = Invoke-WebRequest -Uri "http://localhost:8081/login" -TimeoutSec 5 -UseBasicParsing
+        $jenkinsAccessible = $response.StatusCode -eq 200
+        Write-TestResult -TestName "Jenkins accessible" -Points $(if($jenkinsAccessible){5}else{0}) -MaxPoints 5 -Passed $jenkinsAccessible
     }
-    
-    if ($GradeOnly) {
-        Quick-Grade
-        exit 0
-    }
-    
-    # Check Docker
-    if (-not (Test-DockerInstalled)) {
-        Write-Host "❌ Docker is not installed!" -ForegroundColor Red
-        Write-Host "Please install Docker Desktop from: https://www.docker.com/products/docker-desktop" -ForegroundColor Yellow
-        
-        $response = Read-Host "Would you like to open the download page? (Y/N)"
-        if ($response -eq 'Y') {
-            Start-Process "https://www.docker.com/products/docker-desktop"
-        }
-        exit 1
-    }
-    
-    # Run Setup
-    Setup-GitOps
-    
-    # Run Quick Grade
-    Write-Host ""
-    Write-Host "Running automatic grading..." -ForegroundColor Cyan
-    Start-Sleep -Seconds 5
-    Quick-Grade
-    
-    # Offer to open browser
-    Write-Host ""
-    $response = Read-Host "Would you like to open Grafana in your browser? (Y/N)"
-    if ($response -eq 'Y') {
-        Start-Process "http://localhost:3000"
+    catch {
+        Write-TestResult -TestName "Jenkins accessible" -Points 0 -MaxPoints 5 -Passed $false
     }
 }
-catch {
-    Write-Host "❌ Error: $_" -ForegroundColor Red
-    exit 1
+
+# Test Documentation
+function Test-Documentation {
+    $currentCategory = "Documentation"
+    Write-Host "`nTesting Documentation..." -ForegroundColor Cyan
+    
+    $hasReadme = Test-Path "$ProjectPath\README.md"
+    Write-TestResult -TestName "README.md exists" -Points $(if($hasReadme){2}else{0}) -MaxPoints 2 -Passed $hasReadme
+    
+    if ($hasReadme) {
+        $readme = Get-Content "$ProjectPath\README.md" -Raw
+        $hasContent = $readme.Length -gt 100
+        Write-TestResult -TestName "README content" -Points $(if($hasContent){3}else{0}) -MaxPoints 3 -Passed $hasContent
+    }
 }
+
+# Test Best Practices
+function Test-BestPractices {
+    $currentCategory = "BestPractices"
+    Write-Host "`nTesting Best Practices..." -ForegroundColor Cyan
+    
+    $hasGitignore = Test-Path "$ProjectPath\.gitignore"
+    Write-TestResult -TestName ".gitignore configured" -Points $(if($hasGitignore){1}else{0}) -MaxPoints 1 -Passed $hasGitignore
+    
+    $envFiles = Get-ChildItem -Path $ProjectPath -Filter "*.env*" -Recurse 2>$null
+    $usesEnvVars = $envFiles.Count -gt 0
+    Write-TestResult -TestName "Environment variables" -Points $(if($usesEnvVars){1}else{0}) -MaxPoints 1 -Passed $usesEnvVars
+}
+
+# Generate Report
+function Generate-Report {
+    param([string]$OutputPath = "$ProjectPath\grading-report.html")
+    
+    $grade = [Math]::Round(($script:TotalPoints / $script:MaxPoints) * 20, 2)
+    $percentage = [Math]::Round(($script:TotalPoints / $script:MaxPoints) * 100, 1)
+    $letterGrade = switch ($percentage) {
+        {$_ -ge 90} { "A" }
+        {$_ -ge 80} { "B" }
+        {$_ -ge 70} { "C" }
+        {$_ -ge 60} { "D" }
+        default { "F" }
+    }
+    
+    $html = @"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GitOps TP - Grading Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #333; }
+        .summary { background: #f0f0f0; padding: 20px; border-radius: 10px; margin: 20px 0; }
+        .grade { font-size: 48px; font-weight: bold; text-align: center; }
+        .letter-grade { font-size: 72px; text-align: center; margin: 20px 0; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        th { background: #3498db; color: white; padding: 12px; text-align: left; }
+        td { padding: 10px; border-bottom: 1px solid #ddd; }
+        .pass { color: green; font-weight: bold; }
+        .fail { color: red; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>GitOps TP - Grading Report</h1>
+    
+    <div class="summary">
+        <h2>Overall Grade</h2>
+        <div class="letter-grade">$letterGrade</div>
+        <div class="grade">$grade / 20</div>
+        <p>Total Points: $($script:TotalPoints) / $($script:MaxPoints)</p>
+        <p>Percentage: $percentage%</p>
+    </div>
+    
+    <h2>Student Information</h2>
+    <p>Name: $StudentName</p>
+    <p>ID: $StudentID</p>
+    <p>Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")</p>
+    
+    <h2>Detailed Results</h2>
+    <table>
+        <tr>
+            <th>Test Name</th>
+            <th>Category</th>
+            <th>Status</th>
+            <th>Points</th>
+        </tr>
+"@
+    
+    foreach ($test in $script:TestResults) {
+        $status = if ($test.Passed) { "<span class='pass'>PASS</span>" } else { "<span class='fail'>FAIL</span>" }
+        $html += @"
+        <tr>
+            <td>$($test.TestName)</td>
+            <td>$($test.Category)</td>
+            <td>$status</td>
+            <td>$($test.Points) / $($test.MaxPoints)</td>
+        </tr>
+"@
+    }
+    
+    $html += @"
+    </table>
+</body>
+</html>
+"@
+    
+    $html | Out-File -FilePath $OutputPath -Encoding UTF8
+    Write-Host "`nHTML report saved to: $OutputPath" -ForegroundColor Green
+    
+    # JSON report
+    $jsonReport = @{
+        StudentName = $StudentName
+        StudentID = $StudentID
+        TotalPoints = $script:TotalPoints
+        MaxPoints = $script:MaxPoints
+        Percentage = $percentage
+        Grade = $grade
+        LetterGrade = $letterGrade
+        Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        TestResults = $script:TestResults
+    }
+    
+    $jsonPath = $OutputPath.Replace(".html", ".json")
+    $jsonReport | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonPath -Encoding UTF8
+    Write-Host "JSON report saved to: $jsonPath" -ForegroundColor Green
+}
+
+# Main Grading Process
+function Start-Grading {
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host "        GitOps TP - Automatic Grading System" -ForegroundColor Cyan
+    Write-Host "                   Version 1.0.1" -ForegroundColor Cyan
+    Write-Host "============================================================" -ForegroundColor Cyan
+    
+    Write-Host "`nProject Path: $ProjectPath" -ForegroundColor Yellow
+    if ($StudentName) { Write-Host "Student Name: $StudentName" -ForegroundColor Yellow }
+    if ($StudentID) { Write-Host "Student ID: $StudentID" -ForegroundColor Yellow }
+    Write-Host ""
+    
+    # Run all tests
+    Test-DockerEnvironment
+    Test-RunningContainers
+    Test-ServiceEndpoints
+    Test-PrometheusConfiguration
+    Test-SecurityScanning
+    Test-JenkinsPipeline
+    Test-Documentation
+    Test-BestPractices
+    
+    # Display summary
+    Write-Host "`n============================================================" -ForegroundColor Cyan
+    Write-Host "                    GRADING SUMMARY" -ForegroundColor Cyan
+    Write-Host "============================================================" -ForegroundColor Cyan
+    
+    $percentage = [Math]::Round(($script:TotalPoints / $script:MaxPoints) * 100, 1)
+    $grade = [Math]::Round(($script:TotalPoints / $script:MaxPoints) * 20, 2)
+    
+    Write-Host "Total Points: $($script:TotalPoints) / $($script:MaxPoints)" -ForegroundColor Yellow
+    Write-Host "Percentage: $percentage%" -ForegroundColor $(if($percentage -ge 70){"Green"}elseif($percentage -ge 50){"Yellow"}else{"Red"})
+    Write-Host "Final Grade: $grade / 20" -ForegroundColor $(if($grade -ge 14){"Green"}elseif($grade -ge 10){"Yellow"}else{"Red"})
+    
+    Write-Host "============================================================" -ForegroundColor Cyan
+    
+    # Generate report if requested
+    if ($GenerateReport) {
+        Generate-Report
+    }
+}
+
+# Run the grading
+Start-Grading
